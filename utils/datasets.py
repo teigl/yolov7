@@ -1,5 +1,5 @@
 # Dataset utils and dataloaders
-
+import sys
 import glob
 import logging
 import math
@@ -11,6 +11,8 @@ from itertools import repeat
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
 from threading import Thread
+
+from typing import Iterable, Dict
 
 import cv2
 import numpy as np
@@ -25,6 +27,9 @@ from copy import deepcopy
 #from pycocotools import mask as maskUtils
 from torchvision.utils import save_image
 from torchvision.ops import roi_pool, roi_align, ps_roi_pool, ps_roi_align
+
+from auto_pose.meshrenderer import meshrenderer_phong
+from auto_pose.meshrenderer.pysixd import transform
 
 from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
     resample_segments, clean_str
@@ -350,6 +355,137 @@ def img2label_paths(img_paths):
     return ['txt'.join(x.replace(sa, sb, 1).rsplit(x.split('.')[-1], 1)) for x in img_paths]
 
 
+class AutogenDataset(Dataset):
+
+    def __init__(self, 
+                 objects: Iterable[Dict], 
+                 img_paths: Iterable[str], 
+                 batch_size: int):
+        ''' 
+        object_paths: list of paths to objects 
+        batch_size: number images loaded when batch is empty 
+        '''
+        self.batch_size = batch_size
+        self.batch_base_idx = -batch_size
+        self.img_paths = img_paths
+        self.n_objects = len(objects)
+
+        object_paths = []
+        self.object_sym_axis = []
+        self.object_class = []
+
+        for i,object in enumerate(objects):
+            if 'class' in object:
+                self.object_class.append(object['class'])
+            else:
+                print(f'Warning: Object at pos {i} does not contain class')
+                continue
+
+            if 'path' in object:
+                object_paths.append(object['path'])
+            else:
+                print(f'Warning: Object at pos {i} was not found')
+            
+            self.object_sym_axis.append(
+                object['symmetric_axis'] if 'symmetric_axis' in object else -1)
+
+        self.renderer = meshrenderer_phong.Renderer(object_paths,  
+            vertex_tmp_store_folder=os.getenv("temp") if os.path.isdir(os.getenv("temp")) else ".")
+
+    def __len__(self):
+        return len(self.img_paths)
+
+    def __getitem__(self, idx):
+        if idx >= self.batch_base_idx + len(self.batch_images):
+            self.generate_batch(idx)
+
+        batch_idx = idx - self.batch_base_idx
+        return (self.batch_images[batch_idx],
+                self.batch_labels[batch_idx],
+                '',
+                self.batch_shapes[batch_idx])
+
+    def generate_batch(self, idx, show=False):
+        self.batch_base_idx = idx
+        self.batch_images = []
+        self.batch_labels = []
+        self.batch_shapes = []
+
+        camera_matrix = np.eye(3)
+
+        batch_size = min(len(self) - self.batch_base_idx, self.batch_size)
+        for batch_idx in range(self.batch_size):
+
+            bgr = cv2.imread(self.img_paths[self.batch_base_idx + batch_idx])
+            
+            W = bgr.shape[1]
+            H = bgr.shape[0]
+            camera_matrix[0,0] = W
+            camera_matrix[1,1] = H
+            camera_matrix[0,2] = 0.5*W
+            camera_matrix[1,2] = 0.5*H
+
+            labels = []
+
+            object_idxs = list(range(object_idxs))
+            random.shuffle(object_idxs)
+            for object_idx in object_idxs:
+                
+                t = np.zeros(3)
+                t[2] = np.random.uniform(100, 2000)
+                w_real = camera_matrix[0,2]*t[2]/camera_matrix[0,0]
+                h_real = camera_matrix[1,2]*t[2]/camera_matrix[1,1]
+                t[0] = np.random.uniform(-0.9*w_real, 0.9*w_real)
+                t[1] = np.random.uniform(-0.9*h_real, 0.9*h_real)
+
+                R = transform.random_rotation_matrix()[:3,:3]
+
+                bgr_render, obj_mask = self.renderer.render(
+                    obj_id = object_idx,
+                    W = W,
+                    H = H,
+                    K = camera_matrix.copy(),
+                    R = R,
+                    t = t,
+                    near = 1,
+                    far = 10000,
+                    random_light = True
+                )
+
+                bool_mask = np.where(obj_mask > 0)
+                if bool_mask[0].size <= 0 or bool_mask[1].size <= 0:
+                    print(f"mask not in image")
+                    continue
+                bbox_min_x = np.min(bool_mask[1])
+                bbox_min_y = np.min(bool_mask[0])
+                bbox_max_x = np.max(bool_mask[1])
+                bbox_max_y = np.max(bool_mask[0])
+
+                labels.append(np.array(self.object_class[object_idx],
+                                       (bbox_max_x + bbox_min_x)/2,
+                                       (bbox_max_y + bbox_min_y)/2,
+                                       (bbox_max_x - bbox_min_x),
+                                       (bbox_max_y - bbox_min_y)))
+
+                # mask = obj_mask > 0
+                bgr[bool_mask] = bgr_render[bool_mask]
+
+            batch_labels = torch.zeros((len(labels), 6))
+            if batch_labels.shape[0]:
+                batch_labels[:, 1:] = torch.from_numpy(labels)
+            self.batch_labels.append(batch_labels)
+
+            # Convert
+            self.batch_images.append(torch.from_numpy(np.ascontiguousarray(
+                bgr[:, :, ::-1].transpose(2, 0, 1)))) # BGR to RGB, to 3x416x416
+
+            if show:
+                cv2.imshow(f"Generated image {batch_idx}", bgr)
+                cv2.waitKey(0)
+
+        self.renderer.close()
+
+
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
                  cache_images=False, single_cls=False, stride=32, pad=0.0, prefix=''):
@@ -660,7 +796,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             l[:, 0] = i  # add target image index for build_targets()
 
         return torch.stack(img4, 0), torch.cat(label4, 0), path4, shapes4
-
 
 # Ancillary functions --------------------------------------------------------------------------------------------------
 def load_image(self, index):
