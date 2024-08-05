@@ -414,7 +414,7 @@ class AutogenDataset(Dataset):
         camera_matrix = np.eye(3)
 
         batch_size = min(len(self) - self.batch_base_idx, self.batch_size)
-        for batch_idx in range(self.batch_size):
+        for batch_idx in range(batch_size):
 
             bgr = cv2.imread(self.img_paths[self.batch_base_idx + batch_idx])
             
@@ -427,7 +427,7 @@ class AutogenDataset(Dataset):
 
             labels = []
 
-            object_idxs = list(range(object_idxs))
+            object_idxs = list(range(self.n_objects))
             random.shuffle(object_idxs)
             for object_idx in object_idxs:
                 
@@ -461,18 +461,18 @@ class AutogenDataset(Dataset):
                 bbox_max_x = np.max(bool_mask[1])
                 bbox_max_y = np.max(bool_mask[0])
 
-                labels.append(np.array(self.object_class[object_idx],
+                labels.append([self.object_class[object_idx],
                                        (bbox_max_x + bbox_min_x)/2,
                                        (bbox_max_y + bbox_min_y)/2,
                                        (bbox_max_x - bbox_min_x),
-                                       (bbox_max_y - bbox_min_y)))
+                                       (bbox_max_y - bbox_min_y)])
 
                 # mask = obj_mask > 0
                 bgr[bool_mask] = bgr_render[bool_mask]
 
             batch_labels = torch.zeros((len(labels), 6))
             if batch_labels.shape[0]:
-                batch_labels[:, 1:] = torch.from_numpy(labels)
+                batch_labels[:, 1:] = torch.Tensor(np.array(labels, dtype=np.float32))
             self.batch_labels.append(batch_labels)
 
             # Convert
@@ -480,10 +480,16 @@ class AutogenDataset(Dataset):
                 bgr[:, :, ::-1].transpose(2, 0, 1)))) # BGR to RGB, to 3x416x416
 
             if show:
-                cv2.imshow(f"Generated image {batch_idx}", bgr)
-                cv2.waitKey(0)
+                bgr_show = bgr.copy()
+                for label in labels:
+                    w = int(label[3])
+                    h = int(label[4])
+                    x = int(label[1] - w/2)
+                    y = int(label[2] - h/2)
+                    cv2.rectangle(bgr_show, (x,y,w,h), (255,0,0), 3)
+                cv2.imshow(f"Generated image {batch_idx}", bgr_show)
 
-        self.renderer.close()
+        # self.renderer.close()
 
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
