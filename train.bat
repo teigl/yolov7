@@ -1,11 +1,11 @@
-python train_aux.py ^
+python train.py ^
   --workers 8 ^
   --device 0 ^
   --batch-size 2 ^
-  --data data/wehak.yaml ^
-  --img 1280 1280 ^
-  --cfg cfg/training/yolov7-w6-wehak.yaml ^
-  --weights 'runs/train/yolov7-w6-wehak6/weights/best.pt' ^
-  --name yolov7-w6-wehak ^
+  --data data/subsea.yaml ^
+  --img 640 640 ^
+  --cfg cfg/training/yolov7.yaml ^
+  --weights 'weights/yolov7.pt' ^
+  --name yolov7-subsea ^
   --hyp data/hyp.scratch.custom.yaml ^
-  --epochs 3
+  --epochs 2

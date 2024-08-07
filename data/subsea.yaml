@@ -1,0 +1,16 @@
+
+# train and val data as 1) directory: path/images/, 2) file: path/images.txt, or 3) list: [path1/images/, path2/images/]
+train: D:/dataset/imagnet/CLS-LOC/test
+val: D:/dataset/imagnet/CLS-LOC/val
+
+# number of classes
+nc: 1
+
+# class names
+names: [handle]
+objects: [
+  {
+    class: 0,
+    path: test/bluelogic_notext.obj,
+  }
+]

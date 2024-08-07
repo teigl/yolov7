@@ -8,9 +8,9 @@ objects = [{
   # 'path': 'C:/Users/HakonT/ae_ws/mesh/dhandle.ply',
 }]
 
-images = ['test/test.jpg']
+images = 'test'
 
-dataset = AutogenDataset(objects, images, 1)
+dataset = AutogenDataset(images, (640,640), 1, objects)
 
 while cv2.waitKey() != ord('q'):
   dataset.generate_batch(0, True)

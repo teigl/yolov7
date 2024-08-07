@@ -68,19 +68,24 @@ def exif_size(img):
 
 
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
-                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix=''):
+                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='', objects=None):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
-        dataset = LoadImagesAndLabels(path, imgsz, batch_size,
-                                      augment=augment,  # augment images
-                                      hyp=hyp,  # augmentation hyperparameters
-                                      rect=rect,  # rectangular training
-                                      cache_images=cache,
-                                      single_cls=opt.single_cls,
-                                      stride=int(stride),
-                                      pad=pad,
-                                      image_weights=image_weights,
-                                      prefix=prefix)
+        if objects is None:
+            dataset = LoadImagesAndLabels(path, 
+                                        imgsz, 
+                                        batch_size,
+                                        augment=augment,  # augment images
+                                        hyp=hyp,  # augmentation hyperparameters
+                                        rect=rect,  # rectangular training
+                                        cache_images=cache,
+                                        single_cls=opt.single_cls,
+                                        stride=int(stride),
+                                        pad=pad,
+                                        image_weights=image_weights,
+                                        prefix=prefix)
+            dataset = AutogenDataset(path, imgsz, objects, batch_size, prefix=prefix)
+        
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -358,16 +363,40 @@ def img2label_paths(img_paths):
 class AutogenDataset(Dataset):
 
     def __init__(self, 
+                 path, 
+                 imgsz,
+                 batch_size: int,
                  objects: Iterable[Dict], 
-                 img_paths: Iterable[str], 
-                 batch_size: int):
+                 prefix=''):
         ''' 
         object_paths: list of paths to objects 
         batch_size: number images loaded when batch is empty 
         '''
+
+        try:
+            f = []  # image files
+            for p in path if isinstance(path, list) else [path]:
+                p = Path(p)  # os-agnostic
+                if p.is_dir():  # dir
+                    f += glob.glob(str(p / '**' / '*.*'), recursive=True)
+                    # f = list(p.rglob('**/*.*'))  # pathlib
+                elif p.is_file():  # file
+                    with open(p, 'r') as t:
+                        t = t.read().strip().splitlines()
+                        parent = str(p.parent) + os.sep
+                        f += [x.replace('./', parent) if x.startswith('./') else x for x in t]  # local to global path
+                        # f += [p.parent / x.lstrip(os.sep) for x in t]  # local to global path (pathlib)
+                else:
+                    raise Exception(f'{prefix}{p} does not exist')
+            self.img_paths = sorted([x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in img_formats])
+            # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in img_formats])  # pathlib
+            assert self.img_paths, f'{prefix}No images found'
+        except Exception as e:
+            raise Exception(f'{prefix}Error loading data from {path}: {e}\nSee {help_url}')
+
+        self.imgsz = imgsz
         self.batch_size = batch_size
         self.batch_base_idx = -batch_size
-        self.img_paths = img_paths
         self.n_objects = len(objects)
 
         object_paths = []
@@ -417,6 +446,7 @@ class AutogenDataset(Dataset):
         for batch_idx in range(batch_size):
 
             bgr = cv2.imread(self.img_paths[self.batch_base_idx + batch_idx])
+            bgr = cv2.resize(bgr, self.imgsz)
             
             W = bgr.shape[1]
             H = bgr.shape[0]
