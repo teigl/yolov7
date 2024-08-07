@@ -3,7 +3,8 @@ import cv2
 
 objects = [{
   'class': 0,
-  'path': 'test/bluelogic_handle.obj',
+  'path': 'test/bluelogic_notext.obj',
+  # 'path': 'test/cube.obj',
   # 'path': 'C:/Users/HakonT/ae_ws/mesh/dhandle.ply',
 }]
 
