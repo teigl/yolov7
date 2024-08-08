@@ -84,7 +84,8 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                         pad=pad,
                                         image_weights=image_weights,
                                         prefix=prefix)
-            dataset = AutogenDataset(path, imgsz, objects, batch_size, prefix=prefix)
+        else:
+            dataset = AutogenDataset(path, imgsz, batch_size, objects, prefix=prefix)
         
 
     batch_size = min(batch_size, len(dataset))
@@ -97,7 +98,7 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                         num_workers=nw,
                         sampler=sampler,
                         pin_memory=True,
-                        collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn)
+                        collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn if objects is None else None)
     return dataloader, dataset
 
 
@@ -395,6 +396,8 @@ class AutogenDataset(Dataset):
             raise Exception(f'{prefix}Error loading data from {path}: {e}\nSee {help_url}')
 
         self.imgsz = imgsz
+        self.shape = (imgsz,imgsz)
+        self.batch_images = []
         self.batch_size = batch_size
         self.batch_base_idx = -batch_size
         self.n_objects = len(objects)
@@ -402,10 +405,12 @@ class AutogenDataset(Dataset):
         object_paths = []
         self.object_sym_axis = []
         self.object_class = []
+        self.labels = []
 
         for i,object in enumerate(objects):
             if 'class' in object:
                 self.object_class.append(object['class'])
+                self.labels.append(object['class'])
             else:
                 print(f'Warning: Object at pos {i} does not contain class')
                 continue
@@ -417,6 +422,11 @@ class AutogenDataset(Dataset):
             
             self.object_sym_axis.append(
                 object['symmetric_axis'] if 'symmetric_axis' in object else -1)
+        
+        self.labels = np.zeros((1,len(self.object_class),5))
+        self.labels[0,:,0] = self.object_class
+
+        self.shapes = np.repeat(np.array([(imgsz,imgsz)], dtype=np.float64), len(self), 0)
 
         self.renderer = meshrenderer_phong.Renderer(object_paths,  
             vertex_tmp_store_folder=os.getenv("temp") if os.path.isdir(os.getenv("temp")) else ".")
@@ -446,7 +456,7 @@ class AutogenDataset(Dataset):
         for batch_idx in range(batch_size):
 
             bgr = cv2.imread(self.img_paths[self.batch_base_idx + batch_idx])
-            bgr = cv2.resize(bgr, self.imgsz)
+            bgr = cv2.resize(bgr, self.shape)
             
             W = bgr.shape[1]
             H = bgr.shape[0]
@@ -519,6 +529,7 @@ class AutogenDataset(Dataset):
                     cv2.rectangle(bgr_show, (x,y,w,h), (255,0,0), 3)
                 cv2.imshow(f"Generated image {batch_idx}", bgr_show)
 
+        self.batch_shapes = list(np.repeat(self.shape, len(self.batch_images)))
         # self.renderer.close()
 
 
